@@ -4,25 +4,47 @@ import (
 	"encoding/json"
 )
 
-const ChannelRoom = "room"
+type RLocker interface {
+	RLock()
+	RUnlock()
+}
 
-type Payload interface{}
+type Source interface {
+	GetId() string
+	RLocker
+}
+
+type Type string
+
+type Payload interface {
+	RLocker
+}
 
 type Event struct {
-	Channel string  `json:"channel"`
-	Type    string  `json:"type"`
+	Source  Source  `json:"source"`
+	Type    Type    `json:"type"`
 	Payload Payload `json:"payload"`
 }
 
-func New(channelName string, eventType string, payload Payload) *Event {
+func New(eventType Type, source Source, payload Payload) *Event {
 	return &Event{
-		Channel: channelName,
+		Source:  source,
 		Type:    eventType,
 		Payload: payload,
 	}
 }
 
 func (e *Event) GetAsBytes() ([]byte, error) {
+	if e.Source != nil {
+		defer e.Source.RUnlock()
+		e.Source.RLock()
+	}
+
+	if e.Payload != nil {
+		defer e.Payload.RUnlock()
+		e.Payload.RLock()
+	}
+
 	bs, err := json.Marshal(e)
 
 	if err != nil {

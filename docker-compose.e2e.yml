@@ -1,0 +1,38 @@
+services:
+
+  server:
+    image: golang:1.18.2-alpine3.15
+    working_dir: /app
+    restart: "no"
+    environment:
+      BLOCCS_MODE: "test"
+    command: "go run ./cmd/server"
+    healthcheck:
+      test: "wget 'http://localhost:7000/ping' -O /dev/null"
+      retries: 60
+      interval: 3s
+      timeout: 1s
+    stop_grace_period: 1s
+    stop_signal: SIGINT
+    volumes:
+      - ./:/app
+    networks:
+      - test
+
+  test_runner:
+    image: golang:1.18.2-alpine3.15
+    working_dir: /app
+    restart: "no"
+    environment:
+      CGO_ENABLED: "0"
+    command: "go test -v ./test/e2e"
+    volumes:
+      - ./:/app
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - test
+
+networks:
+  test:

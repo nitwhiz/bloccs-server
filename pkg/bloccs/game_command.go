@@ -1,4 +1,4 @@
-package game
+package bloccs
 
 const CommandLeft = "L"
 const CommandRight = "R"
@@ -8,13 +8,11 @@ const CommandHardLock = "P"
 const CommandHold = "H"
 
 func (g *Game) Command(cmd string) {
-	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.mu.Lock()
 
-	g.FallingPiece.mu.Lock()
-	defer g.FallingPiece.mu.Unlock()
-
-	// todo: piece locking runs into deadlock (?)
+	defer g.fallingPiece.mu.Unlock()
+	g.fallingPiece.mu.Lock()
 
 	switch cmd {
 	case CommandLeft:

@@ -1,0 +1,13 @@
+services:
+
+  test_runner:
+    image: golang:1.18.2-alpine3.15
+    working_dir: /app
+    restart: "no"
+    environment:
+      CGO_ENABLED: "0"
+    command: "go test ./pkg/... ./internal/..."
+    stop_grace_period: 1s
+    stop_signal: SIGINT
+    volumes:
+      - ./:/app

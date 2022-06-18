@@ -1,170 +1,124 @@
 package event
 
 import (
+	"context"
 	"log"
-	"regexp"
 	"sync"
-	"time"
 )
 
-const ChanBroadcast = "*"
-const ChanExprAll = ".*"
+const All = "*"
 
 type Handler func(event *Event)
 
 type Bus struct {
-	handlers          map[string]map[string][]Handler
-	handlersMutex     *sync.RWMutex
-	running           bool
-	waitGroup         *sync.WaitGroup
-	exprToRex         map[string]*regexp.Regexp
-	channels          map[string]chan *Event
-	channelsMutex     *sync.Mutex
-	stopChannels      map[string]chan bool
-	stopChannelsMutex *sync.Mutex
-	mainStopChannel   chan bool
+	nextHandlerId  int
+	handlers       map[Type]map[int]Handler
+	waitGroup      *sync.WaitGroup
+	eventWaitGroup *sync.WaitGroup
+	channel        chan *Event
+	ctx            context.Context
+	stopFunc       context.CancelFunc
+	closeAfter     int
+	mu             *sync.RWMutex
 }
 
 func NewBus() *Bus {
-	return &Bus{
-		handlers:          map[string]map[string][]Handler{},
-		handlersMutex:     &sync.RWMutex{},
-		running:           true,
-		waitGroup:         &sync.WaitGroup{},
-		exprToRex:         map[string]*regexp.Regexp{},
-		channels:          map[string]chan *Event{},
-		channelsMutex:     &sync.Mutex{},
-		stopChannels:      map[string]chan bool{},
-		stopChannelsMutex: &sync.Mutex{},
-		mainStopChannel:   make(chan bool),
+	b := Bus{
+		nextHandlerId:  0,
+		handlers:       map[Type]map[int]Handler{},
+		waitGroup:      &sync.WaitGroup{},
+		eventWaitGroup: &sync.WaitGroup{},
+		channel:        make(chan *Event, 100),
+		closeAfter:     -1,
+		mu:             &sync.RWMutex{},
 	}
-}
 
-func (b *Bus) AddChannel(name string) {
-	c := make(chan *Event)
+	b.ctx, b.stopFunc = context.WithCancel(context.Background())
 
-	b.channelsMutex.Lock()
-	b.channels[name] = c
-	b.channelsMutex.Unlock()
-
-	b.stopChannelsMutex.Lock()
-	b.stopChannels[name] = make(chan bool)
-	b.stopChannelsMutex.Unlock()
-
-	b.startChannelListener(name, c)
-}
-
-func (b *Bus) RemoveChannel(name string) {
-	b.channelsMutex.Lock()
-	delete(b.channels, name)
-	b.channelsMutex.Unlock()
-
-	b.stopChannelsMutex.Lock()
-	b.stopChannels[name] <- true
-	delete(b.stopChannels, name)
-	b.stopChannelsMutex.Unlock()
-}
-
-func (b *Bus) startChannelListener(n string, c chan *Event) {
-	go func(stopChannel chan bool) {
-		defer b.waitGroup.Done()
-
-		b.waitGroup.Add(1)
-
-		for {
-			if !b.running {
-				break
-			}
-
-			select {
-			case <-stopChannel:
-				return
-			case <-b.mainStopChannel:
-				return
-			case event := <-c:
-				go func() {
-					defer b.waitGroup.Done()
-					b.waitGroup.Add(1)
-
-					b.handlersMutex.RLock()
-
-					for expr, handlers := range b.handlers {
-						rex := b.exprToRex[expr]
-
-						if rex.MatchString(n) {
-							for _, sources := range handlers {
-								for _, h := range sources {
-									h(event)
-								}
-							}
-						}
-					}
-
-					b.handlersMutex.RUnlock()
-				}()
-
-				break
-			case <-time.After(time.Millisecond * 10):
-				break
-			}
-		}
-	}(b.stopChannels[n])
+	return &b
 }
 
 func (b *Bus) Stop() {
-	close(b.mainStopChannel)
+	b.eventWaitGroup.Wait()
+
+	if b.stopFunc != nil {
+		b.stopFunc()
+	} else {
+		log.Println("no stop func for bus, stopping may never finish")
+	}
+
 	b.waitGroup.Wait()
 }
 
-func (b *Bus) Subscribe(channelExpr string, handler Handler, source string) {
-	if _, ok := b.exprToRex[channelExpr]; !ok {
-		rex, _ := regexp.Compile(channelExpr)
+func (b *Bus) Subscribe(eventType Type, handler Handler) int {
+	defer b.mu.Unlock()
+	b.mu.Lock()
 
-		b.exprToRex[channelExpr] = rex
+	if _, ok := b.handlers[eventType]; !ok {
+		b.handlers[eventType] = map[int]Handler{}
 	}
 
-	b.handlersMutex.Lock()
-	defer b.handlersMutex.Unlock()
+	handlerId := b.nextHandlerId
 
-	if _, ok := b.handlers[channelExpr]; !ok {
-		b.handlers[channelExpr] = map[string][]Handler{}
-	}
+	b.handlers[eventType][handlerId] = handler
 
-	if _, ok := b.handlers[channelExpr][source]; !ok {
-		b.handlers[channelExpr][source] = []Handler{}
-	}
+	b.nextHandlerId += 1
 
-	b.handlers[channelExpr][source] = append(b.handlers[channelExpr][source], handler)
+	return handlerId
 }
 
-func (b *Bus) Unsubscribe(source string) {
-	b.handlersMutex.Lock()
-	defer b.handlersMutex.Unlock()
+func (b *Bus) Unsubscribe(handlerId int) {
+	defer b.mu.Unlock()
+	b.mu.Lock()
 
-	for expr, sources := range b.handlers {
-		for src := range sources {
-			if src == source {
-				delete(b.handlers[expr], src)
-			}
+	for eventType := range b.handlers {
+		if _, ok := b.handlers[eventType][handlerId]; ok {
+			delete(b.handlers[eventType], handlerId)
+			break
 		}
 	}
 }
 
 func (b *Bus) Publish(event *Event) {
-	if event.Channel == ChanBroadcast {
-		for n, c := range b.channels {
-			exactEvent := &Event{
-				Channel: n,
-				Type:    event.Type,
-				Payload: event.Payload,
-			}
+	b.eventWaitGroup.Add(1)
+	b.channel <- event
+}
 
-			c <- exactEvent
+func (b *Bus) handleEvent(event *Event) {
+	defer b.mu.RUnlock()
+	b.mu.RLock()
+
+	hs, ok := b.handlers[event.Type]
+
+	if ok {
+		for _, h := range hs {
+			h(event)
 		}
-	} else if _, ok := b.channels[event.Channel]; ok {
-		b.channels[event.Channel] <- event
-	} else {
-		log.Printf("channel '%s' not found!", event.Channel)
 	}
 
+	hs, ok = b.handlers[All]
+
+	if ok {
+		for _, h := range hs {
+			h(event)
+		}
+	}
+}
+
+func (b *Bus) Start() {
+	go func() {
+		defer b.waitGroup.Done()
+		b.waitGroup.Add(1)
+
+		for {
+			select {
+			case <-b.ctx.Done():
+				return
+			case event := <-b.channel:
+				b.handleEvent(event)
+				b.eventWaitGroup.Done()
+				break
+			}
+		}
+	}()
 }

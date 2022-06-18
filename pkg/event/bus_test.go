@@ -1,137 +1,115 @@
 package event
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-func TestBus_BusGeneric(t *testing.T) {
-	handler1Calls := 0
-	handler2Calls := 0
-	handler3Calls := 0
-	handler4Calls := 0
+type TestEventPayload struct {
+	Position int
+}
 
+func (s *TestEventPayload) RLock() {}
+
+func (s *TestEventPayload) RUnlock() {}
+
+func TestBus_GenericWithoutPayload(t *testing.T) {
 	b := NewBus()
 
-	b.AddChannel("test/123")
-	b.AddChannel("test/456")
+	callCount1 := 0
+	callCount2 := 0
 
-	b.Subscribe("test/123", func(e *Event) {
-		handler1Calls++
-	}, "test")
+	expectedCallCount1 := 3
+	expectedCallCount2 := 2
 
-	b.Subscribe("test/456", func(e *Event) {
-		handler2Calls++
-	}, "test")
+	b.Subscribe("testEvent1", func(event *Event) {
+		callCount1 += 1
+	})
 
-	b.Subscribe("test/.*", func(e *Event) {
-		handler3Calls++
-	}, "test")
+	b.Subscribe("testEvent2", func(event *Event) {
+		callCount2 += 1
+	})
 
-	b.Publish(New("test/123", "test", nil))
-	b.Publish(New("test/456", "test", nil))
+	b.Start()
 
-	// give channels some time to be received
-	time.Sleep(time.Millisecond * 250)
+	e1 := New("testEvent1", &TestEventSource{Id: "1337"}, nil)
+	e2 := New("testEvent1", &TestEventSource{Id: "1337"}, nil)
+	e3 := New("testEvent2", &TestEventSource{Id: "1337"}, nil)
+	e4 := New("testEvent1", &TestEventSource{Id: "1337"}, nil)
+	e5 := New("testEvent2", &TestEventSource{Id: "1337"}, nil)
 
-	b.Subscribe("test/.*", func(e *Event) {
-		handler4Calls++
-	}, "test")
-
-	b.Publish(New("test/456", "test", nil))
-
-	// give channels some time to be received
-	time.Sleep(time.Millisecond * 250)
+	b.Publish(e1)
+	b.Publish(e2)
+	b.Publish(e3)
+	b.Publish(e4)
+	b.Publish(e5)
 
 	b.Stop()
 
-	if handler1Calls != 1 {
-		t.Fatalf("handler 1 called %d times, expected 1", handler1Calls)
+	if callCount1 != expectedCallCount1 {
+		t.Fatalf("callCount1 is %d instead of %d", callCount1, expectedCallCount1)
 	}
 
-	if handler2Calls != 2 {
-		t.Fatalf("handler 2 called %d times, expected 2", handler2Calls)
-	}
-
-	if handler3Calls != 3 {
-		t.Fatalf("handler 3 called %d times, expected 3", handler3Calls)
-	}
-
-	if handler4Calls != 1 {
-		t.Fatalf("handler 4 called %d times, expected 1", handler4Calls)
+	if callCount2 != expectedCallCount2 {
+		t.Fatalf("callCount2 is %d instead of %d", callCount2, expectedCallCount2)
 	}
 }
 
-func TestBus_BusBroadcast(t *testing.T) {
-	handler1Calls := 0
-	handler2Calls := 0
-
+func TestBus_GenericWithPayload(t *testing.T) {
 	b := NewBus()
 
-	b.AddChannel("test/123")
-	b.AddChannel("test/456")
+	var recievedPayloads []int
 
-	b.Subscribe("test/123", func(e *Event) {
-		handler1Calls++
-	}, "test")
+	callCount1 := 0
+	callCount2 := 0
 
-	b.Subscribe("test/456", func(e *Event) {
-		handler2Calls++
-	}, "test")
+	expectedCallCount1 := 3
+	expectedCallCount2 := 2
 
-	b.Publish(New("*", "test", nil))
-	b.Publish(New("*", "test", nil))
-	b.Publish(New("*", "test", nil))
+	b.Subscribe("testEvent1", func(event *Event) {
+		callCount1 += 1
+		recievedPayloads = append(recievedPayloads, event.Payload.(*TestEventPayload).Position)
+	})
 
-	// give channels some time to be received
-	time.Sleep(time.Millisecond * 250)
+	b.Subscribe("testEvent2", func(event *Event) {
+		callCount2 += 1
+		recievedPayloads = append(recievedPayloads, event.Payload.(*TestEventPayload).Position)
+	})
 
-	if handler1Calls != 3 {
-		t.Fatalf("handler 1 called %d times, expected 3", handler1Calls)
-	}
+	b.Start()
 
-	if handler2Calls != 3 {
-		t.Fatalf("handler 2 called %d times, expected 3", handler2Calls)
-	}
-}
+	e1 := New("testEvent1", &TestEventSource{Id: "1337"}, &TestEventPayload{
+		Position: 0,
+	})
+	e2 := New("testEvent1", &TestEventSource{Id: "1337"}, &TestEventPayload{
+		Position: 1,
+	})
+	e3 := New("testEvent2", &TestEventSource{Id: "1337"}, &TestEventPayload{
+		Position: 2,
+	})
+	e4 := New("testEvent1", &TestEventSource{Id: "1337"}, &TestEventPayload{
+		Position: 3,
+	})
+	e5 := New("testEvent2", &TestEventSource{Id: "1337"}, &TestEventPayload{
+		Position: 4,
+	})
 
-func TestBus_Unsubscribe(t *testing.T) {
-	handler1Calls := 0
-	handler2Calls := 0
-
-	b := NewBus()
-
-	b.AddChannel("test/123")
-	b.AddChannel("test/456")
-
-	b.Subscribe("test/123", func(e *Event) {
-		handler1Calls++
-	}, "test1")
-
-	b.Subscribe("test/456", func(e *Event) {
-		handler2Calls++
-	}, "test2")
-
-	b.Publish(New("test/123", "test", nil))
-	b.Publish(New("test/456", "test", nil))
-
-	// give channels some time to be received
-	time.Sleep(time.Millisecond * 250)
-
-	b.Unsubscribe("test2")
-
-	b.Publish(New("test/456", "test", nil))
-
-	// give channels some time to be received
-	time.Sleep(time.Millisecond * 250)
+	b.Publish(e1)
+	b.Publish(e2)
+	b.Publish(e3)
+	b.Publish(e4)
+	b.Publish(e5)
 
 	b.Stop()
 
-	if handler1Calls != 1 {
-		t.Fatalf("handler 1 called %d times, expected 1", handler1Calls)
+	if callCount1 != expectedCallCount1 {
+		t.Fatalf("callCount1 is %d instead of %d", callCount1, expectedCallCount1)
 	}
 
-	if handler2Calls != 1 {
-		t.Fatalf("handler 2 called %d times, expected 1", handler2Calls)
+	if callCount2 != expectedCallCount2 {
+		t.Fatalf("callCount2 is %d instead of %d", callCount2, expectedCallCount2)
+	}
+
+	for i, p := range recievedPayloads {
+		if p != i {
+			t.Fatalf("event order is mixed up")
+		}
 	}
 }

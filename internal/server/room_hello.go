@@ -3,14 +3,30 @@ package server
 import (
 	"bloccs-server/pkg/event"
 	"encoding/json"
-	"log"
+	"errors"
+	"strings"
 )
 
+const EventHello = "hello"
+const EventHelloAck = "hello_ack"
+
 type HelloResponseMessage struct {
-	Name string
+	Name string `json:"name"`
 }
 
-func (r *Room) listenForHello(p *Player) (*HelloResponseMessage, error) {
+type HelloAckPayload struct {
+	Player *Player `json:"player"`
+}
+
+func (h *HelloAckPayload) RLock() {
+	h.Player.RLock()
+}
+
+func (h *HelloAckPayload) RUnlock() {
+	h.Player.RUnlock()
+}
+
+func listenForHello(p *Player) (*HelloResponseMessage, error) {
 	msg, err := p.ReadMessage()
 
 	if err != nil {
@@ -22,22 +38,24 @@ func (r *Room) listenForHello(p *Player) (*HelloResponseMessage, error) {
 	err = json.Unmarshal(msg, &helloResponse)
 
 	if err != nil || helloResponse.Name == "" {
-		log.Println("handshakeHello: invalid hello response. listening again.", helloResponse)
-
-		return r.listenForHello(p)
+		return nil, errors.New("invalid hello response")
 	}
 
 	return &helloResponse, nil
 }
 
 func (r *Room) sendHello(p *Player) error {
-	bs, err := json.Marshal(event.New("none", event.Hello, nil))
+	return r.sendEventToPlayer(event.New(EventHello, nil, nil), p)
+}
 
-	if err != nil {
-		return err
+func sanitizeName(name string) string {
+	name = strings.TrimSpace(name)
+
+	if len(name) > 8 {
+		name = name[:8]
 	}
 
-	return p.SendMessage(bs)
+	return strings.ToUpper(name)
 }
 
 func (r *Room) handshakeHello(p *Player) error {
@@ -45,45 +63,13 @@ func (r *Room) handshakeHello(p *Player) error {
 		return err
 	}
 
-	helloResponse, err := r.listenForHello(p)
+	helloResponse, err := listenForHello(p)
 
 	if err != nil {
 		return err
 	}
 
-	p.Name = helloResponse.Name
+	p.Name = sanitizeName(helloResponse.Name)
 
-	r.playersMutex.Lock()
-
-	currPlayers := make([]event.PlayerPayload, 0)
-
-	for _, p := range r.Players {
-		currPlayers = append(currPlayers, event.PlayerPayload{
-			ID:       p.ID,
-			Name:     p.Name,
-			CreateAt: p.CreateAt,
-		})
-	}
-
-	r.playersMutex.Unlock()
-
-	bs, err := json.Marshal(event.New("none", event.HelloAck, &event.HelloAckPayload{
-		You: event.PlayerPayload{
-			ID:       p.ID,
-			Name:     p.Name,
-			CreateAt: p.CreateAt,
-		},
-		Room: event.RoomPayload{
-			ID:      r.ID,
-			Players: currPlayers,
-		},
-	}))
-
-	if err != nil {
-		log.Println("cannot marshal ack message")
-
-		return err
-	}
-
-	return p.SendMessage(bs)
+	return r.sendEventToPlayer(event.New(EventHelloAck, r, &HelloAckPayload{Player: p}), p)
 }

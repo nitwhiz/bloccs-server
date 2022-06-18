@@ -3,7 +3,7 @@ package main
 import "bloccs-server/internal/server"
 
 func main() {
-	srv := server.NewBloccsServer()
+	srv := server.New()
 
 	err := srv.Start()
 

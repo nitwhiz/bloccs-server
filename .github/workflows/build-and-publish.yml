@@ -9,9 +9,10 @@ on:
   pull_request:
 
 jobs:
+
   build-and-publish-docker-image:
     name: Build docker image and push to repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
 
